@@ -10,24 +10,29 @@
 name: Publish Docker images
 
 on:
+  # Trigger the workflow on new releases
   release:
     types: [published]
+  
+  # Allow manual execution from the Actions tab
+  workflow_dispatch:
 
 jobs:
   push_to_registry:
-    name: Push Docker image to Docker Hub
+    name: Push Docker image to GitHub Container Registry
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        repos:
-          - image: streetwriters/notesnook-sync
-            file: ./Notesnook.API/Dockerfile
+        image_name: [notesnook-sync, identity, sse]
+        include:
+          - image_name: notesnook-sync
+            dockerfile: ./Notesnook.API/Dockerfile
 
-          - image: streetwriters/identity
-            file: ./Streetwriters.Identity/Dockerfile
+          - image_name: identity
+            dockerfile: ./Streetwriters.Identity/Dockerfile
 
-          - image: streetwriters/sse
-            file: ./Streetwriters.Messenger/Dockerfile
+          - image_name: sse
+            dockerfile: ./Streetwriters.Messenger/Dockerfile
     permissions:
       packages: write
       contents: read
@@ -41,20 +46,23 @@ jobs:
       - name: Docker Setup Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v8
+          platforms: linux/arm64
 
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-          ecr: auto
-          logout: true
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Pull previous image from docker hub to use it as cache to improve the image build time.
+      # Construct the full image name for use in subsequent steps
+      - name: Set full image name
+        run: echo "IMAGE_PATH=ghcr.io/${{ github.repository_owner }}/${{ matrix.image_name }}" >> $GITHUB_ENV
+
+      # Pull previous image from ghcr.io to use it as cache to improve the image build time.
       - name: docker pull cache image
         continue-on-error: true
-        run: docker pull ${{ matrix.repos.image }}:latest
+        run: docker pull ${{ env.IMAGE_PATH }}:latest
 
       # Setup QEMU
       - name: Set up QEMU
@@ -64,22 +72,22 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ matrix.repos.image }}
+          images: ${{ env.IMAGE_PATH }}
 
       - name: Build and push Docker image
         id: push
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.repos.file }}
+          file: ${{ matrix.dockerfile }}
           push: true
-          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v8
+          platforms: linux/arm64,linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
-          cache-from: ${{ matrix.repos.image }}:latest
+          cache-from: type=registry,ref=${{ env.IMAGE_PATH }}:latest
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v1
         with:
-          subject-name: index.docker.io/${{ matrix.repos.image }}
+          subject-name: ${{ env.IMAGE_PATH }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
